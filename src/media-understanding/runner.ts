@@ -13,6 +13,8 @@ import type { MsgContext } from "../auto-reply/templating.js";
 import { applyTemplate } from "../auto-reply/templating.js";
 import { requireApiKey, resolveApiKeyForProvider } from "../agents/model-auth.js";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+const mediaLog = createSubsystemLogger("media-understanding");
 import { runExec } from "../process/exec.js";
 import type {
   MediaUnderstandingConfig,
@@ -908,7 +910,11 @@ async function runCliEntry(params: {
       mediaPath,
     });
     const text = trimOutput(resolved, maxChars);
-    if (!text) return null;
+    if (!text) {
+      mediaLog.info(`CLI returned empty output for ${capability}`);
+      return null;
+    }
+    mediaLog.info(`CLI ${capability} success: ${text.length} chars`);
     return {
       kind: capability === "audio" ? "audio.transcription" : `${capability}.description`,
       attachmentIndex: params.attachmentIndex,

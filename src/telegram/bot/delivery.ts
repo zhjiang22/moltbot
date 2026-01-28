@@ -11,6 +11,8 @@ import type { ReplyPayload } from "../../auto-reply/types.js";
 import type { ReplyToMode } from "../../config/config.js";
 import type { MarkdownTableMode } from "../../config/types.base.js";
 import { danger, logVerbose } from "../../globals.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
+const telegramMediaLog = createSubsystemLogger("telegram/media");
 import { formatErrorMessage } from "../../infra/errors.js";
 import { mediaKindFromMime } from "../../media/constants.js";
 import { fetchRemoteMedia } from "../../media/fetch.js";
@@ -417,6 +419,9 @@ export async function resolveMedia(
   else if (msg.video) placeholder = "<media:video>";
   else if (msg.video_note) placeholder = "<media:video>";
   else if (msg.audio || msg.voice) placeholder = "<media:audio>";
+  telegramMediaLog.info(
+    `resolveMedia ${placeholder} path=${saved.path} contentType=${saved.contentType ?? "unknown"}`,
+  );
   return { path: saved.path, contentType: saved.contentType, placeholder };
 }
 
