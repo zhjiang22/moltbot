@@ -18,6 +18,7 @@ import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
 import { deliverReplies } from "./bot/delivery.js";
 import { resolveTelegramDraftStreamingChunking } from "./draft-chunking.js";
 import { createTelegramDraftStream } from "./draft-stream.js";
+import { createThinkingUpdater, type ThinkingUpdater } from "./thinking-updater.js";
 import { cacheSticker, describeStickerImage } from "./sticker-cache.js";
 import { resolveAgentDir } from "../agents/agent-scope.js";
 
@@ -84,6 +85,24 @@ export const dispatchTelegramMessage = async ({
         warn: logVerbose,
       })
     : undefined;
+  // Thinking updater: separate editable message for thinking + tool status (private chat only)
+  const thinkingCfg = telegramCfg.thinking;
+  const toolDisplayCfg = telegramCfg.toolDisplay ?? {};
+  const thinkingEnabled =
+    isPrivateChat &&
+    thinkingCfg?.enabled === true &&
+    thinkingCfg?.mode !== "off";
+  let thinkingUpdater: ThinkingUpdater | undefined;
+  if (thinkingEnabled) {
+    thinkingUpdater = createThinkingUpdater({
+      api: bot.api,
+      chatId,
+      messageThreadId: resolvedThreadId,
+      thinkingConfig: thinkingCfg!,
+      toolDisplay: toolDisplayCfg,
+    });
+  }
+
   const draftChunking =
     draftStream && streamMode === "block"
       ? resolveTelegramDraftStreamingChunking(cfg, route.accountId)
@@ -219,6 +238,16 @@ export const dispatchTelegramMessage = async ({
         if (info.kind === "final") {
           await flushDraft();
           draftStream?.stop();
+          if (thinkingUpdater) {
+            const mode = thinkingCfg?.completionMode ?? "summary";
+            if (mode === "delete") {
+              await thinkingUpdater.delete();
+            } else if (mode === "summary") {
+              await thinkingUpdater.collapse();
+            } else {
+              thinkingUpdater.stop();
+            }
+          }
         }
         const result = await deliverReplies({
           replies: [payload],
@@ -260,9 +289,31 @@ export const dispatchTelegramMessage = async ({
     replyOptions: {
       skillFilter,
       onPartialReply: draftStream ? (payload) => updateDraftFromPartial(payload.text) : undefined,
-      onReasoningStream: draftStream
-        ? (payload) => {
-            if (payload.text) draftStream.update(payload.text);
+      onReasoningStream:
+        draftStream || thinkingUpdater
+          ? (payload) => {
+              if (payload.text) {
+                draftStream?.update(payload.text);
+                thinkingUpdater?.update(payload.text);
+              }
+            }
+          : undefined,
+      onAgentEvent: thinkingUpdater
+        ? (evt) => {
+            if (evt.stream === "tool") {
+              const phase = typeof evt.data.phase === "string" ? evt.data.phase : "";
+              const toolCallId = typeof evt.data.toolCallId === "string" ? evt.data.toolCallId : "";
+              const name = typeof evt.data.name === "string" ? evt.data.name : "";
+              if (phase === "start" && toolCallId) {
+                const args =
+                  evt.data.args && typeof evt.data.args === "object"
+                    ? (evt.data.args as Record<string, unknown>)
+                    : undefined;
+                thinkingUpdater!.toolStart(toolCallId, name, args);
+              } else if (phase === "result" && toolCallId) {
+                thinkingUpdater!.toolEnd(toolCallId, Boolean(evt.data.isError));
+              }
+            }
           }
         : undefined,
       disableBlockStreaming,
@@ -272,6 +323,7 @@ export const dispatchTelegramMessage = async ({
     },
   });
   draftStream?.stop();
+  thinkingUpdater?.stop();
   let sentFallback = false;
   if (!deliveryState.delivered && deliveryState.skippedNonSilent > 0) {
     const result = await deliverReplies({
